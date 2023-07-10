@@ -75,7 +75,7 @@ func TranslateLogsRequest(request *collectorLogs.ExportLogsServiceRequest, ri Re
 					attrs[k] = v
 				}
 				if log.Attributes != nil {
-					addAttributesToMap(attrs, log.Attributes)
+					addAttributesToMap("",attrs, log.Attributes)
 				}
 
 				// Now we need to wrap the eventAttrs in an event so we can specify the timestamp

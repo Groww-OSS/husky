@@ -105,7 +105,7 @@ func TestAddAttributesToMap(t *testing.T) {
 
 	for _, tc := range testCases {
 		attrs := map[string]interface{}{}
-		addAttributesToMap(attrs, []*common.KeyValue{tc.attribute})
+		addAttributesToMap("",attrs, []*common.KeyValue{tc.attribute})
 		assert.Equal(t, tc.expected, attrs[tc.key])
 	}
 }
