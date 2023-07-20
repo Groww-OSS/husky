@@ -256,7 +256,7 @@ func getDataset(ri RequestInfo, attrs map[string]interface{}) string {
 	if ri.hasLegacyKey() {
 		dataset = ri.Dataset
 	} else {
-		serviceName, ok := attrs["service.name"].(string)
+		serviceName, ok := attrs[resourceAttrsPrefix+"service.name"].(string)
 		if !ok ||
 			strings.TrimSpace(serviceName) == "" ||
 			strings.HasPrefix(serviceName, "unknown_service") {
@@ -270,7 +270,7 @@ func getDataset(ri RequestInfo, attrs map[string]interface{}) string {
 
 func getLogsDataset(ri RequestInfo, attrs map[string]interface{}) string {
 	var dataset string
-	serviceName, ok := attrs["service.name"].(string)
+	serviceName, ok := attrs[resourceAttrsPrefix+"service.name"].(string)
 	if !ok || strings.TrimSpace(serviceName) == "" || strings.HasPrefix(serviceName, "unknown_service") {
 		if strings.TrimSpace(ri.Dataset) == "" {
 			dataset = unknownLogSource
