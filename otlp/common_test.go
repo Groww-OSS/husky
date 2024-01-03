@@ -2,14 +2,24 @@ package otlp
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	collectorlogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	collectormetrics "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	common "go.opentelemetry.io/proto/otlp/common/v1"
+	spb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestParseGrpcMetadataIntoRequestInfo(t *testing.T) {
@@ -416,6 +426,329 @@ func Test_limitedWriter(t *testing.T) {
 			s := l.String()
 			if s != tt.want {
 				t.Errorf("limitedWriter.String() = '%v', want '%v'", s, tt.want)
+			}
+		})
+	}
+}
+
+func Test_WriteOtlpHttpFailureResponse(t *testing.T) {
+	tests := []struct {
+		contentType   string
+		err           OTLPError
+		expectedError error
+	}{
+		{
+			contentType: "application/x-protobuf",
+			err: OTLPError{
+				HTTPStatusCode: http.StatusBadRequest,
+				Message:        "test",
+			},
+		},
+		{
+			contentType: "application/protobuf",
+			err: OTLPError{
+				HTTPStatusCode: http.StatusBadRequest,
+				Message:        "test",
+			},
+		},
+		{
+			contentType: "application/json",
+			err: OTLPError{
+				HTTPStatusCode: http.StatusBadRequest,
+				Message:        "test",
+			},
+		},
+		{
+			contentType: "nonsense",
+			err: OTLPError{
+				HTTPStatusCode: http.StatusBadRequest,
+				Message:        "test",
+			},
+			expectedError: ErrInvalidContentType,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.contentType, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest("POST", "/", nil)
+			r.Header.Set("Content-Type", tt.contentType)
+
+			err := WriteOtlpHttpFailureResponse(w, r, tt.err)
+			if tt.expectedError != nil {
+				assert.Equal(t, tt.expectedError, err)
+			} else {
+				assert.NoError(t, err)
+
+				assert.Equal(t, tt.contentType, w.Header().Get("Content-Type"))
+				assert.Equal(t, tt.err.HTTPStatusCode, w.Code)
+
+				data, err := io.ReadAll(w.Body)
+				assert.NoError(t, err)
+				var result spb.Status
+				if tt.contentType == "application/json" {
+					err = protojson.Unmarshal(data, &result)
+					assert.NoError(t, err)
+				} else {
+					err = proto.Unmarshal(data, &result)
+					assert.NoError(t, err)
+				}
+				assert.Equal(t, tt.err.Message, result.Message)
+			}
+		})
+	}
+}
+
+func Test_BytesToTraceID(t *testing.T) {
+	tests := []struct {
+		name    string
+		traceID string
+		b64     bool
+		want    string
+	}{
+		{
+			name:    "64-bit traceID",
+			traceID: "cbe4decd12429177",
+			want:    "cbe4decd12429177",
+		},
+		{
+			name:    "128-bit zero-padded traceID",
+			traceID: "0000000000000000cbe4decd12429177",
+			want:    "cbe4decd12429177",
+		},
+		{
+			name:    "128-bit non-zero-padded traceID",
+			traceID: "f23b42eac289a0fdcde48fcbe3ab1a32",
+			want:    "f23b42eac289a0fdcde48fcbe3ab1a32",
+		},
+		{
+			name:    "Non-hex traceID",
+			traceID: "foobar1",
+			want:    "666f6f62617231",
+		},
+		{
+			name:    "Longer non-hex traceID",
+			traceID: "foobarbaz",
+			want:    "666f6f62617262617a",
+		},
+		{
+			name:    "traceID munged by browser",
+			traceID: "6e994e8673e93a51200c137330aeddad",
+			b64:     true,
+			want:    "6e994e8673e93a51200c137330aeddad",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var traceID []byte
+			var err error
+			if tt.b64 {
+				traceID, err = base64.StdEncoding.DecodeString(tt.traceID)
+			} else {
+				traceID, err = hex.DecodeString(tt.traceID)
+			}
+			if err != nil {
+				traceID = []byte(tt.traceID)
+			}
+			got := BytesToTraceID(traceID)
+			if got != tt.want {
+				t.Errorf("got:  %#v\n\twant: %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_WriteOtlpHttpTraceSuccessResponse(t *testing.T) {
+	tests := []struct {
+		contentType   string
+		expectedError error
+	}{
+		{
+			contentType: "application/x-protobuf",
+		},
+		{
+			contentType: "application/protobuf",
+		},
+		{
+			contentType: "application/json",
+		},
+		{
+			contentType:   "nonsense",
+			expectedError: ErrInvalidContentType,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.contentType, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest("POST", "/", nil)
+			r.Header.Set("Content-Type", tt.contentType)
+
+			err := WriteOtlpHttpTraceSuccessResponse(w, r)
+			if tt.expectedError != nil {
+				assert.Equal(t, tt.expectedError, err)
+			} else {
+				assert.NoError(t, err)
+
+				assert.Equal(t, tt.contentType, w.Header().Get("Content-Type"))
+				assert.Equal(t, http.StatusOK, w.Code)
+
+				data, err := io.ReadAll(w.Body)
+				assert.NoError(t, err)
+				var result collectortrace.ExportTraceServiceResponse
+				if tt.contentType == "application/json" {
+					err = protojson.Unmarshal(data, &result)
+					assert.NoError(t, err)
+				} else {
+					err = proto.Unmarshal(data, &result)
+					assert.NoError(t, err)
+				}
+				assert.Nil(t, result.GetPartialSuccess())
+			}
+		})
+	}
+}
+
+func Test_WriteOtlpHttpMetricSuccessResponse(t *testing.T) {
+	tests := []struct {
+		contentType   string
+		expectedError error
+	}{
+		{
+			contentType: "application/x-protobuf",
+		},
+		{
+			contentType: "application/protobuf",
+		},
+		{
+			contentType: "application/json",
+		},
+		{
+			contentType:   "nonsense",
+			expectedError: ErrInvalidContentType,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.contentType, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest("POST", "/", nil)
+			r.Header.Set("Content-Type", tt.contentType)
+
+			err := WriteOtlpHttpMetricSuccessResponse(w, r)
+			if tt.expectedError != nil {
+				assert.Equal(t, tt.expectedError, err)
+			} else {
+				assert.NoError(t, err)
+
+				assert.Equal(t, tt.contentType, w.Header().Get("Content-Type"))
+				assert.Equal(t, http.StatusOK, w.Code)
+
+				data, err := io.ReadAll(w.Body)
+				assert.NoError(t, err)
+				var result collectormetrics.ExportMetricsServiceResponse
+				if tt.contentType == "application/json" {
+					err = protojson.Unmarshal(data, &result)
+					assert.NoError(t, err)
+				} else {
+					err = proto.Unmarshal(data, &result)
+					assert.NoError(t, err)
+				}
+				assert.Nil(t, result.GetPartialSuccess())
+			}
+		})
+	}
+}
+
+func Test_WriteOtlpHttpLogSuccessResponse(t *testing.T) {
+	tests := []struct {
+		contentType   string
+		expectedError error
+	}{
+		{
+			contentType: "application/x-protobuf",
+		},
+		{
+			contentType: "application/protobuf",
+		},
+		{
+			contentType: "application/json",
+		},
+		{
+			contentType:   "nonsense",
+			expectedError: ErrInvalidContentType,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.contentType, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest("POST", "/", nil)
+			r.Header.Set("Content-Type", tt.contentType)
+
+			err := WriteOtlpHttpLogSuccessResponse(w, r)
+			if tt.expectedError != nil {
+				assert.Equal(t, tt.expectedError, err)
+			} else {
+				assert.NoError(t, err)
+
+				assert.Equal(t, tt.contentType, w.Header().Get("Content-Type"))
+				assert.Equal(t, http.StatusOK, w.Code)
+
+				data, err := io.ReadAll(w.Body)
+				assert.NoError(t, err)
+				var result collectorlogs.ExportLogsServiceResponse
+				if tt.contentType == "application/json" {
+					err = protojson.Unmarshal(data, &result)
+					assert.NoError(t, err)
+				} else {
+					err = proto.Unmarshal(data, &result)
+					assert.NoError(t, err)
+				}
+				assert.Nil(t, result.GetPartialSuccess())
+			}
+		})
+	}
+}
+
+func Test_BytesToSpanID(t *testing.T) {
+	tests := []struct {
+		name   string
+		spanID string
+		b64    bool
+		want   string
+	}{
+		{
+			name:   "spanID",
+			spanID: "890452a577ef2e0f",
+			want:   "890452a577ef2e0f",
+		},
+		{
+			name:   "spanID munged by browser (converted in this test)",
+			spanID: "890452a577ef2e0f",
+			b64:    true,
+			want:   "890452a577ef2e0f",
+		},
+		{
+			name:   "spanID munged by browser (from a bad trace)",
+			spanID: "e77ddbeb7f7adf77fbd396b9",
+			b64:    false,
+			want:   "533b639633f705a5",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var spanID []byte
+			var err error
+			if tt.b64 {
+				spanID, err = base64.StdEncoding.DecodeString(tt.spanID)
+			} else {
+				spanID, err = hex.DecodeString(tt.spanID)
+			}
+			if err != nil {
+				spanID = []byte(tt.spanID)
+			}
+			got := BytesToSpanID(spanID)
+			if got != tt.want {
+				t.Errorf("got:  %#v\n\twant: %#v", got, tt.want)
 			}
 		})
 	}
